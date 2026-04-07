@@ -21,5 +21,5 @@ COPY . .
 # Expose the port that the app runs on
 EXPOSE 8000
 
-# Run the app using Gunicorn with Uvicorn workers
-CMD ["gunicorn", "app.main:app", "--workers", "4", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000"]
+# Run the app using Gunicorn with Uvicorn workers and bind to Render's dynamic PORT
+CMD gunicorn app.main:app --workers 4 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT

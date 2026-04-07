@@ -26,14 +26,24 @@ import numpy as np
 import faiss
 from openai import OpenAI
 
+try:
+    from google import genai
+    has_genai = True
+except ImportError:
+    has_genai = False
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
-EMBEDDING_MODEL = "text-embedding-3-small"
-EMBEDDING_DIM = 1536          # fixed for text-embedding-3-small
+EMBEDDING_MODEL_OPENAI = "text-embedding-3-small"
+EMBEDDING_DIM_OPENAI = 1536          # fixed for text-embedding-3-small
+
+EMBEDDING_MODEL_GEMINI = "text-embedding-004"
+EMBEDDING_DIM_GEMINI = 768           # fixed for text-embedding-004
+
 CHUNK_TARGET_TOKENS = 400     # target chunk size (in words; ~1.3 words per token on average)
 CHUNK_OVERLAP_TOKENS = 80     # word overlap between consecutive chunks
 MAX_CHUNKS_PER_EMBED_CALL = 100  # OpenAI allows up to 2048 inputs; keep batches small
@@ -111,7 +121,12 @@ class RAGPipeline:
     """
 
     def __init__(self, api_key: Optional[str] = None):
-        self.client = OpenAI(api_key=api_key or os.environ["OPENAI_API_KEY"])
+        self.openai_client = OpenAI(api_key=api_key or os.environ.get("OPENAI_API_KEY"))
+        self.gemini_client = None
+        gemini_api_key = os.environ.get("GEMINI_API_KEY")
+        if has_genai and gemini_api_key:
+            self.gemini_client = genai.Client(api_key=gemini_api_key)
+            
         self.index: Optional[faiss.Index] = None
         self.chunks: list[Chunk] = []   # parallel list — chunks[i] corresponds to index vector i
 
@@ -191,7 +206,7 @@ class RAGPipeline:
     # 2. Embeddings
     # ------------------------------------------------------------------
 
-    def create_embeddings(self, chunks: list[Chunk]) -> np.ndarray:
+    def create_embeddings(self, chunks: list[Chunk], provider: str = "openai") -> np.ndarray:
         """
         Embed a list of Chunk objects using text-embedding-3-small.
 
@@ -205,8 +220,9 @@ class RAGPipeline:
             Float32 numpy array of shape (len(chunks), EMBEDDING_DIM).
             Row i is the embedding for chunks[i].
         """
+        dim = EMBEDDING_DIM_OPENAI if provider == "openai" else EMBEDDING_DIM_GEMINI
         if not chunks:
-            return np.empty((0, EMBEDDING_DIM), dtype=np.float32)
+            return np.empty((0, dim), dtype=np.float32)
 
         texts = [chunk.text for chunk in chunks]
         all_embeddings: list[list[float]] = []
@@ -219,13 +235,22 @@ class RAGPipeline:
                 -(-len(texts) // MAX_CHUNKS_PER_EMBED_CALL),  # ceiling div
                 len(batch),
             )
-            response = self.client.embeddings.create(
-                model=EMBEDDING_MODEL,
-                input=batch,
-                encoding_format="float",
-            )
-            # Response items are guaranteed to be in the same order as input
-            batch_vectors = [item.embedding for item in sorted(response.data, key=lambda x: x.index)]
+            if provider == "gemini":
+                if not self.gemini_client:
+                    raise RuntimeError("GEMINI_API_KEY missing.")
+                response = self.gemini_client.models.embed_content(
+                    model=EMBEDDING_MODEL_GEMINI,
+                    contents=batch
+                )
+                # response.embeddings is a list of EmbedContentResponse items which have `.values`
+                batch_vectors = [item.values for item in response.embeddings]
+            else:
+                response = self.openai_client.embeddings.create(
+                    model=EMBEDDING_MODEL_OPENAI,
+                    input=batch,
+                    encoding_format="float",
+                )
+                batch_vectors = [item.embedding for item in sorted(response.data, key=lambda x: x.index)]
             all_embeddings.extend(batch_vectors)
 
         vectors = np.array(all_embeddings, dtype=np.float32)
@@ -261,13 +286,14 @@ class RAGPipeline:
         # L2-normalise so inner product == cosine similarity
         faiss.normalize_L2(embeddings)
 
-        index = faiss.IndexFlatIP(EMBEDDING_DIM)
+        dim = embeddings.shape[1]
+        index = faiss.IndexFlatIP(dim)
         index.add(embeddings)
 
         self.index = index
         self.chunks = chunks
 
-        logger.info("FAISS index built: %d vectors, dimension=%d", index.ntotal, EMBEDDING_DIM)
+        logger.info("FAISS index built: %d vectors, dimension=%d", index.ntotal, dim)
         return index
 
     # ------------------------------------------------------------------
@@ -279,6 +305,7 @@ class RAGPipeline:
         query: str,
         k: int = 5,
         score_threshold: float = 0.0,
+        provider: str = "openai"
     ) -> list[RetrievedChunk]:
         """
         Embed the query and return the k most similar chunks.
@@ -296,13 +323,21 @@ class RAGPipeline:
         if self.index is None or not self.chunks:
             raise RuntimeError("Index is empty. Run build_index() or load_index() first.")
 
-        # Embed the query using the same model
-        response = self.client.embeddings.create(
-            model=EMBEDDING_MODEL,
-            input=[query],
-            encoding_format="float",
-        )
-        query_vector = np.array([response.data[0].embedding], dtype=np.float32)
+        if provider == "gemini":
+            if not self.gemini_client:
+                raise RuntimeError("GEMINI_API_KEY missing.")
+            response = self.gemini_client.models.embed_content(
+                model=EMBEDDING_MODEL_GEMINI,
+                contents=query,
+            )
+            query_vector = np.array([response.embeddings[0].values], dtype=np.float32)
+        else:
+            response = self.openai_client.embeddings.create(
+                model=EMBEDDING_MODEL_OPENAI,
+                input=[query],
+                encoding_format="float",
+            )
+            query_vector = np.array([response.data[0].embedding], dtype=np.float32)
         faiss.normalize_L2(query_vector)
 
         # Search — returns scores and FAISS-internal IDs
@@ -336,13 +371,14 @@ class RAGPipeline:
         documents: list[Document],
         chunk_size: int = CHUNK_TARGET_TOKENS,
         overlap: int = CHUNK_OVERLAP_TOKENS,
+        provider: str = "openai",
     ) -> None:
         """
         Run the full ingestion pipeline: chunk → embed → store.
         Call this once per knowledge base update.
         """
         chunks = self.chunk_documents(documents, chunk_size, overlap)
-        embeddings = self.create_embeddings(chunks)
+        embeddings = self.create_embeddings(chunks, provider=provider)
         self.store_in_faiss(chunks, embeddings)
 
     # ------------------------------------------------------------------
@@ -501,63 +537,60 @@ class RetrieverService:
     SCORE_THRESHOLD = 0.25
 
     def __init__(self, index_dir: Optional[str] = None):
-        self.index_dir = Path(index_dir or os.getenv("FAISS_INDEX_DIR", _DEFAULT_INDEX_DIR))
-        self._pipeline: Optional[RAGPipeline] = None
-        self._index_loaded = False
+        self.base_index_dir = Path(index_dir or os.getenv("FAISS_INDEX_DIR", _DEFAULT_INDEX_DIR))
+        self._pipelines: dict[str, Optional[RAGPipeline]] = {"openai": None, "gemini": None}
+        self._index_loaded: dict[str, bool] = {"openai": False, "gemini": False}
 
     # ------------------------------------------------------------------
     # Lazy index loading
     # ------------------------------------------------------------------
 
-    def _ensure_index(self) -> None:
+    def _ensure_index(self, provider: str) -> None:
         """
-        Load the FAISS index from disk the first time it is needed.
-
-        Called synchronously from the thread-pool executor inside
-        ``retrieve_context()`` so it is safe to do blocking I/O here.
+        Load the FAISS index from disk for the specific provider.
         """
-        if self._index_loaded:
+        if self._index_loaded.get(provider, False):
             return
 
-        self._pipeline = RAGPipeline()
+        pipeline = RAGPipeline()
+        provider_dir = self.base_index_dir / provider
 
-        if self.index_dir.exists() and (self.index_dir / "faiss.index").exists():
+        if provider_dir.exists() and (provider_dir / "faiss.index").exists():
             try:
-                self._pipeline.load_index(self.index_dir)
-                self._index_loaded = True
-                logger.info("RetrieverService: FAISS index loaded from %s", self.index_dir)
+                pipeline.load_index(provider_dir)
+                self._pipelines[provider] = pipeline
+                self._index_loaded[provider] = True
+                logger.info("RetrieverService: FAISS index loaded from %s", provider_dir)
             except Exception as exc:
-                logger.error("RetrieverService: Failed to load FAISS index: %s", exc)
-                # Leave _index_loaded=False so we stay graceful on every call
+                logger.error("RetrieverService: Failed to load FAISS index for %s: %s", provider, exc)
         else:
             logger.warning(
                 "RetrieverService: No FAISS index found at %s. "
                 "Context retrieval will return empty results until the index is built.",
-                self.index_dir,
+                provider_dir,
             )
 
     # ------------------------------------------------------------------
     # Core retrieval helper (runs in thread executor)
     # ------------------------------------------------------------------
 
-    def _sync_retrieve(self, query: str) -> str:
+    def _sync_retrieve(self, query: str, provider: str = "openai") -> str:
         """
         Synchronous retrieval logic executed in a thread-pool executor.
-
-        Returns a formatted context string ready to be inserted into an
-        LLM prompt, or an empty string if no relevant chunks were found.
         """
-        self._ensure_index()
+        self._ensure_index(provider)
 
-        if not self._index_loaded or self._pipeline is None:
-            logger.warning("RetrieverService: Index not available — returning empty context.")
+        pipeline = self._pipelines.get(provider)
+        if not self._index_loaded.get(provider, False) or pipeline is None:
+            logger.warning("RetrieverService: Index not available for %s — returning empty context.", provider)
             return ""
 
         try:
-            chunks = self._pipeline.retrieve_top_k(
+            chunks = pipeline.retrieve_top_k(
                 query,
                 k=self.TOP_K,
                 score_threshold=self.SCORE_THRESHOLD,
+                provider=provider
             )
         except Exception as exc:
             logger.error("RetrieverService: retrieve_top_k failed: %s", exc)
@@ -584,22 +617,12 @@ class RetrieverService:
     # Public async API
     # ------------------------------------------------------------------
 
-    async def retrieve_context(self, query: str) -> str:
+    async def retrieve_context(self, query: str, provider: str = "openai") -> str:
         """
         Async entry-point called by the orchestrator.
-
-        Runs the blocking FAISS search in the default thread-pool executor
-        so the FastAPI event loop remains unblocked.
-
-        Args:
-            query: The user's natural language query.
-
-        Returns:
-            A formatted string of relevant knowledge-base excerpts, or an
-            empty string when no relevant content is found.
         """
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, partial(self._sync_retrieve, query))
+        return await loop.run_in_executor(None, partial(self._sync_retrieve, query, provider))
 
 
 # ---------------------------------------------------------------------------

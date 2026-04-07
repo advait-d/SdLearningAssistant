@@ -54,6 +54,7 @@ async def chat(payload: ChatRequest) -> ChatResponse:
         result = await orchestrator.handle_request(
             session_id=payload.session_id,
             user_query=payload.message,
+            provider=payload.provider,
         )
     except Exception as exc:
         logger.exception("Unhandled error in orchestrator: %s", exc)

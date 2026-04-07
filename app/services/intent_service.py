@@ -21,9 +21,14 @@ import asyncio
 from dataclasses import dataclass
 from enum import Enum
 from functools import partial
-from typing import Optional
-
 from openai import OpenAI, OpenAIError
+
+try:
+    from google import genai
+    from google.genai import types
+    has_genai = True
+except ImportError:
+    has_genai = False
 
 logger = logging.getLogger(__name__)
 
@@ -167,18 +172,23 @@ class IntentService:
     """
 
     MODEL          = "gpt-4o-mini"
+    GEMINI_MODEL   = "gemini-2.5-flash"
     MAX_TOKENS     = 60
     TEMPERATURE    = 0
     FALLBACK_LABEL = IntentLabel.OUT_OF_SCOPE
 
     def __init__(self, api_key: Optional[str] = None):
-        self.client = OpenAI(api_key=api_key or os.environ["OPENAI_API_KEY"])
+        self.openai_client = OpenAI(api_key=api_key or os.environ.get("OPENAI_API_KEY"))
+        self.gemini_client = None
+        gemini_api_key = os.environ.get("GEMINI_API_KEY")
+        if has_genai and gemini_api_key:
+            self.gemini_client = genai.Client(api_key=gemini_api_key)
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def classify(self, query: str) -> IntentResult:
+    def classify(self, query: str, provider: str = "openai") -> IntentResult:
         """
         Classify a single query and return an IntentResult.
 
@@ -203,7 +213,7 @@ class IntentService:
         prompt = INTENT_CLASSIFICATION_PROMPT.format(query=query)
 
         try:
-            raw_label, confidence = self._call_api(prompt)
+            raw_label, confidence = self._call_api(prompt, provider)
             label = self._parse_label(raw_label)
             logger.info(
                 "classify(%r) -> %s (confidence=%.2f)",
@@ -224,7 +234,7 @@ class IntentService:
             logger.error("Failed to parse classification response: %s", exc)
             return self._fallback(query, reason=str(exc))
 
-    def classify_batch(self, queries: list[str]) -> list[IntentResult]:
+    def classify_batch(self, queries: list[str], provider: str = "openai") -> list[IntentResult]:
         """
         Classify a list of queries sequentially.
 
@@ -238,9 +248,9 @@ class IntentService:
         Returns:
             List of IntentResult in the same order as input.
         """
-        return [self.classify(q) for q in queries]
+        return [self.classify(q, provider=provider) for q in queries]
 
-    async def classify_intent(self, query: str) -> str:
+    async def classify_intent(self, query: str, provider: str = "openai") -> str:
         """
         Async-friendly wrapper used by the orchestrator.
 
@@ -256,7 +266,7 @@ class IntentService:
         """
         loop = asyncio.get_event_loop()
         result: IntentResult = await loop.run_in_executor(
-            None, partial(self.classify, query)
+            None, partial(self.classify, query, provider)
         )
         return result.label.value
 
@@ -264,7 +274,7 @@ class IntentService:
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _call_api(self, prompt: str) -> tuple[str, float]:
+    def _call_api(self, prompt: str, provider: str) -> tuple[str, float]:
         """
         Make the chat completion call and return (raw_label, confidence).
 
@@ -272,30 +282,49 @@ class IntentService:
         parse it, and pull out the two fields. Any deviation from the schema
         raises an exception caught by classify().
         """
-        response = self.client.chat.completions.create(
-            model=self.MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a precise intent classifier. "
-                        "Always respond with valid JSON only. "
-                        "No markdown. No explanation."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": prompt,
-                },
-            ],
-            temperature=self.TEMPERATURE,
-            max_tokens=self.MAX_TOKENS,
-            top_p=1,
-            presence_penalty=0,
-            frequency_penalty=0,
-        )
+        if provider == "gemini":
+            if not self.gemini_client:
+                raise RuntimeError("GEMINI_API_KEY is not configured.")
+            config = types.GenerateContentConfig(
+                system_instruction=(
+                    "You are a precise intent classifier. "
+                    "Always respond with valid JSON only. "
+                    "No markdown. No explanation."
+                ),
+                temperature=self.TEMPERATURE,
+                response_mime_type="application/json"
+            )
+            response = self.gemini_client.models.generate_content(
+                model=self.GEMINI_MODEL,
+                contents=prompt,
+                config=config
+            )
+            content = response.text.strip()
+        else:
+            response = self.openai_client.chat.completions.create(
+                model=self.MODEL,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a precise intent classifier. "
+                            "Always respond with valid JSON only. "
+                            "No markdown. No explanation."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    },
+                ],
+                temperature=self.TEMPERATURE,
+                max_tokens=self.MAX_TOKENS,
+                top_p=1,
+                presence_penalty=0,
+                frequency_penalty=0,
+            )
+            content = response.choices[0].message.content.strip()
 
-        content = response.choices[0].message.content.strip()
         logger.debug("Raw model response: %r", content)
 
         # Strip markdown code fences if the model wraps output despite instructions

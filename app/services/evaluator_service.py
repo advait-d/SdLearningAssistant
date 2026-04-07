@@ -40,7 +40,8 @@ class EvaluatorService:
         self, 
         user_request: str, 
         context: str, 
-        ai_response: str
+        ai_response: str,
+        provider: str = "openai"
     ) -> Tuple[bool, str, float]:
         """
         Evaluates the generated response.
@@ -76,6 +77,7 @@ class EvaluatorService:
             eval_result = await llm_service.generate_structured_response(
                 system_prompt=system_prompt,
                 user_input="Please evaluate the response and return the confidence score JSON.",
+                provider=provider,
                 temperature=0.0
             )
             
@@ -96,13 +98,13 @@ class EvaluatorService:
 
         if needs_fallback:
             logger.warning(f"Response rejected (Score: {score}). Triggering fallback.")
-            fallback_msg = await self._trigger_fallback(user_request, context)
+            fallback_msg = await self._trigger_fallback(user_request, context, provider=provider)
             return True, fallback_msg, score
 
         # Response passed evaluation
         return False, ai_response, score
 
-    async def _trigger_fallback(self, user_request: str, context: str) -> str:
+    async def _trigger_fallback(self, user_request: str, context: str, provider: str = "openai") -> str:
         """
         Generates a fallback response asking for clarification or suggesting to narrow the query.
         """
@@ -118,6 +120,7 @@ class EvaluatorService:
             fallback_response = await llm_service.generate_response(
                 system_prompt=system_prompt,
                 user_input="Generate 2-3 clarification questions.",
+                provider=provider,
                 temperature=0.4 # slight temperature for conversational naturalness
             )
             return fallback_response

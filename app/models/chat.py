@@ -4,7 +4,7 @@ Request and response models for the /chat endpoint.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Literal
 from pydantic import BaseModel, Field
 
 
@@ -27,6 +27,10 @@ class ChatRequest(BaseModel):
             "conversation history across turns."
         ),
         examples=["user-abc123"],
+    )
+    provider: Literal["openai", "gemini"] = Field(
+        default="gemini",
+        description="The LLM provider to use for this request.",
     )
 
 

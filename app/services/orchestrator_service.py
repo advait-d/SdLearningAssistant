@@ -37,7 +37,7 @@ class OrchestratorService:
             formatted_history += f"{role}: {msg['content']}\n\n"
         return formatted_history
 
-    async def handle_request(self, session_id: str, user_query: str) -> Dict[str, Any]:
+    async def handle_request(self, session_id: str, user_query: str, provider: str = "openai") -> Dict[str, Any]:
         """
         Main pipeline to handle a user's incoming chat request.
         
@@ -51,10 +51,10 @@ class OrchestratorService:
         7. Evaluate the response for confidence/hallucinations
         8. Update memory with final answer
         """
-        logger.info(f"Processing request for session '{session_id}' | Query: '{user_query}'")
+        logger.info(f"Processing request for session '{session_id}' | Provider: {provider} | Query: '{user_query}'")
 
         # 1. Classify Intent
-        intent = await intent_service.classify_intent(user_query)
+        intent = await intent_service.classify_intent(user_query, provider=provider)
         logger.info(f"Classified Intent: {intent}")
 
         # 2. Reject OUT_OF_SCOPE early
@@ -63,7 +63,7 @@ class OrchestratorService:
             return {"response": msg, "intent": intent, "score": None}
 
         # 3. Retrieve Context (RAG)
-        context = await retriever_service.retrieve_context(user_query)
+        context = await retriever_service.retrieve_context(user_query, provider=provider)
 
         # 4. Get Conversation History
         raw_history = get_history(session_id)
@@ -90,6 +90,7 @@ class OrchestratorService:
             initial_response = await llm_service.generate_response(
                 system_prompt=system_prompt,
                 user_input=user_query,
+                provider=provider,
                 temperature=0.7
             )
         except Exception as e:
@@ -104,7 +105,8 @@ class OrchestratorService:
         is_fallback, final_response, confidence_score = await evaluator_service.evaluate_response(
             user_request=user_query,
             context=context,
-            ai_response=initial_response
+            ai_response=initial_response,
+            provider=provider
         )
 
         if is_fallback:

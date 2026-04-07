@@ -4,49 +4,63 @@ import logging
 from typing import Dict, Any, Optional
 from openai import AsyncOpenAI, OpenAIError
 
+try:
+    from google import genai
+    from google.genai import types
+    has_genai = True
+except ImportError:
+    has_genai = False
+
 # Configure logger for this service
 logger = logging.getLogger(__name__)
 
 class LLMService:
     """
-    Service for interacting with OpenAI Chat Completions API.
+    Service for interacting with OpenAI and Google Gemini Chat APIs.
     Handles standard chat responses, structured data parsing, and error handling.
     """
     def __init__(self, api_key: Optional[str] = None):
         # Initialize the async OpenAI client using the provided key or environment variable
-        self.client = AsyncOpenAI(api_key=api_key or os.getenv("OPENAI_API_KEY"))
+        self.openai_client = AsyncOpenAI(api_key=api_key or os.getenv("OPENAI_API_KEY"))
+        
+        # Initialize Gemini Client if available
+        self.gemini_client = None
+        gemini_api_key = os.getenv("GEMINI_API_KEY")
+        if has_genai and gemini_api_key:
+            self.gemini_client = genai.Client(api_key=gemini_api_key)
 
     async def generate_response(
         self, 
         system_prompt: str, 
         user_input: str, 
-        model: str = "gpt-4-turbo", 
+        provider: str = "openai",
+        model: Optional[str] = None, 
         temperature: float = 0.7,
         json_mode: bool = False
     ) -> str:
         """
-        Calls the OpenAI API with a system prompt and user input.
-        
-        Args:
-            system_prompt: The system instructions setting the context and rules.
-            user_input: The actual query or task from the user.
-            model: The OpenAI model to use (default: gpt-4-turbo).
-            temperature: Controls randomness (0.0 = deterministic, 1.0 = highly creative).
-            json_mode: If True, forces the model to return valid JSON.
-            
-        Returns:
-            The raw string response from the model.
+        Calls the selected LLM API with a system prompt and user input.
         """
+        if provider == "gemini":
+            return await self._generate_gemini(
+                system_prompt, user_input, model or "gemini-2.5-flash", temperature, json_mode
+            )
+        else:
+            return await self._generate_openai(
+                system_prompt, user_input, model or "gpt-4-turbo", temperature, json_mode
+            )
+
+    async def _generate_openai(
+        self, system_prompt: str, user_input: str, model: str, temperature: float, json_mode: bool
+    ) -> str:
         try:
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_input}
             ]
-            
-            # Use json_object response format if requested
             response_format = {"type": "json_object"} if json_mode else {"type": "text"}
             
-            response = await self.client.chat.completions.create(
+            response = await self.openai_client.chat.completions.create(
                 model=model,
                 messages=messages,
                 temperature=temperature,
@@ -56,50 +70,63 @@ class LLMService:
             content = response.choices[0].message.content
             if not content:
                 raise ValueError("Received empty response from the model.")
-                
             return content
             
         except OpenAIError as e:
             logger.error(f"OpenAI API Error: {str(e)}")
-            # Raise a more generic exception to be handled by the FastAPI exception handlers
-            raise RuntimeError(f"Failed to communicate with the LLM provider: {str(e)}")
+            raise RuntimeError(f"Failed to communicate with OpenAI: {str(e)}")
         except Exception as e:
             logger.error(f"Unexpected error in LLM Service: {str(e)}")
             raise RuntimeError(f"An unexpected error occurred: {str(e)}")
+
+    async def _generate_gemini(
+        self, system_prompt: str, user_input: str, model: str, temperature: float, json_mode: bool
+    ) -> str:
+        if not self.gemini_client:
+            raise RuntimeError("Gemini API is not configured (missing GEMINI_API_KEY or google-genai).")
+            
+        try:
+            config = types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                temperature=temperature,
+                response_mime_type="application/json" if json_mode else "text/plain"
+            )
+            
+            response = await self.gemini_client.aio.models.generate_content(
+                model=model,
+                contents=user_input,
+                config=config
+            )
+            
+            content = response.text
+            if not content:
+                raise ValueError("Received empty response from the Gemini model.")
+            return content
+            
+        except Exception as e:
+            logger.error(f"Gemini API Error: {str(e)}")
+            raise RuntimeError(f"Failed to communicate with Gemini: {str(e)}")
 
     async def generate_structured_response(
         self, 
         system_prompt: str, 
         user_input: str, 
-        model: str = "gpt-4-turbo", 
+        provider: str = "openai",
+        model: Optional[str] = None, 
         temperature: float = 0.0
     ) -> Dict[str, Any]:
         """
         Generates a structured JSON response and parses it into a Python dictionary.
-        Highly useful for Confidence Scoring or formatted Design Reviews.
-        
-        Note: The system prompt MUST explicitly tell the model to output JSON 
-        for this to work reliably.
-        
-        Args:
-            system_prompt: System instructions (must mention JSON output).
-            user_input: The query or task.
-            model: The OpenAI model.
-            temperature: Defaults to 0.0 for more predictable structured outputs.
-            
-        Returns:
-            A dictionary containing the parsed JSON structure.
         """
         try:
             result_text = await self.generate_response(
                 system_prompt=system_prompt,
                 user_input=user_input,
+                provider=provider,
                 model=model,
                 temperature=temperature,
                 json_mode=True
             )
-            
-            # Parse the text into a dictionary
             parsed_json = json.loads(result_text)
             return parsed_json
             

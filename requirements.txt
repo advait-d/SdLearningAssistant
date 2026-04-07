@@ -3,5 +3,6 @@ uvicorn[standard]~=0.24.0
 pydantic~=2.4.2
 openai~=1.39.0
 numpy~=1.26.4
-faiss-cpu~=1.7.4
+faiss-cpu>=1.7.4
 python-dotenv~=1.0.0
+gunicorn~=21.2.0

@@ -1,3 +1,18 @@
-/.venv/
+# System/IDE Files
+.idea/
+.DS_Store
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment
+.venv/
+env/
+venv/
+.env
+
+# Data and Dependencies
+data/
+data/faiss_index/
 frontend_codegen.md
-.gitignore

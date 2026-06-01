@@ -15,15 +15,25 @@ class EvaluatorService:
         # Configuration for evaluation rules
         self.confidence_threshold = 0.6
         
-        # Phrases that often indicate the model is hallucinating, guessing, or lacking context
-        self.hallucination_signals = [
-            "i don't know",
-            "i am not sure",
-            "i lack information",
-            "i do not have enough information",
-            "as an ai",
+        # Phrases that indicate the model refused to answer (these should score LOW, not high)
+        # A good assistant answers from expertise; refusing is a failure mode.
+        self.refusal_signals = [
+            "i do not have enough information to answer",
+            "i don't have enough information",
+            "i lack the information",
             "there is no context provided",
-            "it is not mentioned"
+            "the context does not contain",
+            "based on the provided context, i cannot",
+            "i cannot answer this",
+            "i'm unable to answer",
+        ]
+        
+        # Phrases that indicate genuine uncertainty (softer penalty)
+        self.uncertainty_signals = [
+            "i'm not sure",
+            "i am not sure",
+            "as an ai language model",
+            "it is not mentioned",
         ]
         
         # Resolve prompt directory
@@ -52,28 +62,32 @@ class EvaluatorService:
                 - final_response: Either the original valid response or the generated fallback.
                 - confidence_score: The calculated score (0.0 to 1.0).
         """
-        # 1. Check for heuristic hallucination signals in the text
         lower_response = ai_response.lower()
-        has_vague_signals = any(signal in lower_response for signal in self.hallucination_signals)
         
-        if has_vague_signals:
-            logger.info("Heuristic hallucination or uncertainty signals detected in response.")
+        # 1. Hard refusal check — model explicitly refused to answer
+        has_refusal = any(signal in lower_response for signal in self.refusal_signals)
+        has_uncertainty = any(signal in lower_response for signal in self.uncertainty_signals)
+        
+        if has_refusal:
+            logger.warning("Model refused to answer a question it should know. Forcing fallback.")
+            return True, await self._retry_without_restriction(user_request, context, provider), 0.2
+        
+        if has_uncertainty:
+            logger.info("Uncertainty signals detected in response.")
 
         # 2. Extract Confidence Score via LLM
-        score = 1.0
+        score = 0.85  # optimistic default — assume good unless evaluator says otherwise
         reason = "Passed heuristic checks"
         
         try:
             eval_template = self._read_prompt("confidence_scoring.txt")
             
-            # Format the prompt with inputs
             system_prompt = eval_template.format(
                 user_request=user_request,
                 context=context,
                 ai_response=ai_response
             )
             
-            # Ask the LLM to score the response (JSON mode, temperature=0.0)
             eval_result = await llm_service.generate_structured_response(
                 system_prompt=system_prompt,
                 user_input="Please evaluate the response and return the confidence score JSON.",
@@ -81,20 +95,17 @@ class EvaluatorService:
                 temperature=0.0
             )
             
-            score = float(eval_result.get("score", 1.0))
+            score = float(eval_result.get("score", 0.85))
             reason = eval_result.get("reason", "No justification provided.")
             logger.info(f"Evaluator Score: {score} | Reason: {reason}")
             
         except Exception as e:
             logger.error(f"Failed to extract confidence score: {str(e)}")
-            # If scoring fails, we fall back to heuristics
-            if has_vague_signals:
-                score = 0.4 
+            if has_uncertainty:
+                score = 0.5
 
-        # 3. Decision Rules: Should we trigger a fallback?
-        # Rule A: Score is explicitly below the threshold
-        # Rule B: Strong heuristic signals were found, and score is borderline (< 0.8)
-        needs_fallback = (score < self.confidence_threshold) or (has_vague_signals and score < 0.8)
+        # 3. Decision: trigger fallback only if genuinely low quality
+        needs_fallback = score < self.confidence_threshold
 
         if needs_fallback:
             logger.warning(f"Response rejected (Score: {score}). Triggering fallback.")
@@ -104,9 +115,37 @@ class EvaluatorService:
         # Response passed evaluation
         return False, ai_response, score
 
+    async def _retry_without_restriction(
+        self, user_request: str, context: str, provider: str = "openai"
+    ) -> str:
+        """
+        When the model incorrectly refused to answer, retry with an explicit
+        instruction to answer from expert knowledge.
+        """
+        retry_system_prompt = (
+            "You are an expert system design architect and educator with deep knowledge of "
+            "distributed systems, scalability, databases, networking, and software architecture patterns. "
+            "Answer the following question directly and thoroughly from your expertise. "
+            "Do NOT say you lack information — you are the expert. "
+            "Use concrete examples, real systems, and specific trade-offs."
+        )
+        try:
+            logger.info("Retrying with unrestricted expert prompt for: %r", user_request[:80])
+            return await llm_service.generate_response(
+                system_prompt=retry_system_prompt,
+                user_input=user_request,
+                provider=provider,
+                temperature=0.7
+            )
+        except Exception as e:
+            logger.error(f"Retry also failed: {str(e)}")
+            return (
+                "I encountered an issue generating a response. Please try again or rephrase your question."
+            )
+
     async def _trigger_fallback(self, user_request: str, context: str, provider: str = "openai") -> str:
         """
-        Generates a fallback response asking for clarification or suggesting to narrow the query.
+        Generates a fallback response asking for clarification when the response is genuinely low-quality.
         """
         try:
             fallback_template = self._read_prompt("fallback_clarification.txt")
@@ -116,21 +155,19 @@ class EvaluatorService:
                 user_request=user_request
             )
             
-            # Generate the clarification questions
             fallback_response = await llm_service.generate_response(
                 system_prompt=system_prompt,
                 user_input="Generate 2-3 clarification questions.",
                 provider=provider,
-                temperature=0.4 # slight temperature for conversational naturalness
+                temperature=0.4
             )
             return fallback_response
             
         except Exception as e:
             logger.error(f"Failed to generate dynamic fallback: {str(e)}")
-            # Hardcoded failsafe fallback
             return (
-                "I do not have enough confidence or context to provide an accurate system design for this request. "
-                "Could you please narrow down your query or provide more specific architectural constraints?"
+                "Could you provide more details about what you're trying to build? "
+                "For example: expected scale, tech constraints, or what aspect you want to focus on?"
             )
 
 # Singleton instance for use across routes/services

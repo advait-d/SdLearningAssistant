@@ -16,3 +16,4 @@ venv/
 data/
 data/faiss_index/
 frontend_codegen.md
+staticdocs/

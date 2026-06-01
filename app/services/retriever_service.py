@@ -41,12 +41,12 @@ logger = logging.getLogger(__name__)
 EMBEDDING_MODEL_OPENAI = "text-embedding-3-small"
 EMBEDDING_DIM_OPENAI = 1536          # fixed for text-embedding-3-small
 
-EMBEDDING_MODEL_GEMINI = "text-embedding-004"
-EMBEDDING_DIM_GEMINI = 768           # fixed for text-embedding-004
+EMBEDDING_MODEL_GEMINI = "models/gemini-embedding-001"
+EMBEDDING_DIM_GEMINI = 3072          # gemini-embedding-001 output dimension
 
 CHUNK_TARGET_TOKENS = 400     # target chunk size (in words; ~1.3 words per token on average)
 CHUNK_OVERLAP_TOKENS = 80     # word overlap between consecutive chunks
-MAX_CHUNKS_PER_EMBED_CALL = 100  # OpenAI allows up to 2048 inputs; keep batches small
+MAX_CHUNKS_PER_EMBED_CALL = 20   # conservative batch size; Gemini free tier is rate-limited
 
 
 # ---------------------------------------------------------------------------
@@ -208,50 +208,76 @@ class RAGPipeline:
 
     def create_embeddings(self, chunks: list[Chunk], provider: str = "openai") -> np.ndarray:
         """
-        Embed a list of Chunk objects using text-embedding-3-small.
+        Embed a list of Chunk objects.
 
-        Sends chunks in batches to stay within API limits and avoid
-        timeouts on large ingestion runs.
+        Sends chunks in small batches. Retries with exponential backoff on
+        429 (rate-limit) errors from either provider.
 
         Args:
             chunks: Chunks to embed.
+            provider: "openai" or "gemini".
 
         Returns:
             Float32 numpy array of shape (len(chunks), EMBEDDING_DIM).
-            Row i is the embedding for chunks[i].
         """
+        import time
+
         dim = EMBEDDING_DIM_OPENAI if provider == "openai" else EMBEDDING_DIM_GEMINI
         if not chunks:
             return np.empty((0, dim), dtype=np.float32)
 
         texts = [chunk.text for chunk in chunks]
         all_embeddings: list[list[float]] = []
+        total_batches = -(-len(texts) // MAX_CHUNKS_PER_EMBED_CALL)  # ceiling div
 
-        for batch_start in range(0, len(texts), MAX_CHUNKS_PER_EMBED_CALL):
+        for batch_idx, batch_start in enumerate(range(0, len(texts), MAX_CHUNKS_PER_EMBED_CALL)):
             batch = texts[batch_start: batch_start + MAX_CHUNKS_PER_EMBED_CALL]
             logger.info(
                 "Embedding batch %d/%d (%d chunks)",
-                batch_start // MAX_CHUNKS_PER_EMBED_CALL + 1,
-                -(-len(texts) // MAX_CHUNKS_PER_EMBED_CALL),  # ceiling div
-                len(batch),
+                batch_idx + 1, total_batches, len(batch),
             )
-            if provider == "gemini":
-                if not self.gemini_client:
-                    raise RuntimeError("GEMINI_API_KEY missing.")
-                response = self.gemini_client.models.embed_content(
-                    model=EMBEDDING_MODEL_GEMINI,
-                    contents=batch
-                )
-                # response.embeddings is a list of EmbedContentResponse items which have `.values`
-                batch_vectors = [item.values for item in response.embeddings]
-            else:
-                response = self.openai_client.embeddings.create(
-                    model=EMBEDDING_MODEL_OPENAI,
-                    input=batch,
-                    encoding_format="float",
-                )
-                batch_vectors = [item.embedding for item in sorted(response.data, key=lambda x: x.index)]
+
+            # Retry loop with exponential backoff for 429 / transient errors
+            max_retries = 6
+            delay = 5.0  # seconds
+            for attempt in range(max_retries):
+                try:
+                    if provider == "gemini":
+                        if not self.gemini_client:
+                            raise RuntimeError("GEMINI_API_KEY missing.")
+                        response = self.gemini_client.models.embed_content(
+                            model=EMBEDDING_MODEL_GEMINI,
+                            contents=batch
+                        )
+                        batch_vectors = [item.values for item in response.embeddings]
+                    else:
+                        response = self.openai_client.embeddings.create(
+                            model=EMBEDDING_MODEL_OPENAI,
+                            input=batch,
+                            encoding_format="float",
+                        )
+                        batch_vectors = [item.embedding for item in sorted(response.data, key=lambda x: x.index)]
+                    break  # success
+
+                except Exception as exc:
+                    err_str = str(exc)
+                    is_rate_limit = "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "rate" in err_str.lower()
+                    if is_rate_limit and attempt < max_retries - 1:
+                        wait = delay * (2 ** attempt)
+                        logger.warning(
+                            "Rate limit hit (attempt %d/%d). Retrying in %.0fs…",
+                            attempt + 1, max_retries, wait,
+                        )
+                        time.sleep(wait)
+                    else:
+                        raise
+
             all_embeddings.extend(batch_vectors)
+
+            # Inter-batch pause to stay within free-tier RPM limits
+            # Gemini free tier: ~10 RPM → wait 7s between batches
+            if provider == "gemini" and batch_idx < total_batches - 1:
+                time.sleep(7.0)
 
         vectors = np.array(all_embeddings, dtype=np.float32)
         logger.info("Created embeddings: shape=%s", vectors.shape)

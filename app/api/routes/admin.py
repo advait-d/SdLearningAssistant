@@ -100,12 +100,15 @@ async def retrieve(payload: RetrieveRequest) -> RetrievalResultModel:
 
     # Also fetch the structured chunks for the detailed response
     chunks: List[RetrievedChunkModel] = []
-    if retriever_service._index_loaded and retriever_service._pipeline:
+    provider = getattr(payload, "provider", "openai")
+    pipeline = retriever_service._pipelines.get(provider)
+    if retriever_service._index_loaded.get(provider) and pipeline:
         try:
-            raw_chunks = retriever_service._pipeline.retrieve_top_k(
+            raw_chunks = pipeline.retrieve_top_k(
                 payload.query,
                 k=payload.top_k,
                 score_threshold=retriever_service.SCORE_THRESHOLD,
+                provider=provider,
             )
             chunks = [
                 RetrievedChunkModel(

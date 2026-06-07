@@ -1,4 +1,5 @@
 import os
+import re
 import logging
 from typing import Dict, Any
 
@@ -20,6 +21,16 @@ class OrchestratorService:
         # Resolve prompt directory
         base_dir = os.path.dirname(os.path.abspath(__file__))
         self.prompts_dir = os.path.join(base_dir, "prompts")
+
+        # Greetings that should get a friendly welcome, not OUT_OF_SCOPE
+        self._greeting_pattern = re.compile(
+            r"^(hi+|hey+|hello+|howdy|hiya|sup|what'?s up|good (morning|afternoon|evening)|greetings|thanks?|thank you|ty|thx|great|awesome|cool|nice|ok|okay|got it|sounds good)\.?[!?]?$",
+            re.IGNORECASE,
+        )
+
+    def _is_greeting(self, query: str) -> bool:
+        """True for short conversational openers that should not go to the LLM classifier."""
+        return bool(self._greeting_pattern.match(query.strip()))
 
     def _read_prompt(self, filename: str) -> str:
         filepath = os.path.join(self.prompts_dir, filename)
@@ -52,6 +63,19 @@ class OrchestratorService:
         8. Update memory with final answer
         """
         logger.info(f"Processing request for session '{session_id}' | Provider: {provider} | Query: '{user_query}'")
+
+        # 0. Short-circuit for greetings — no LLM call needed
+        if self._is_greeting(user_query):
+            return {
+                "response": (
+                    "Hey! 👋 I'm your System Design learning assistant. "
+                    "Ask me anything about system design, software architecture, or technical concepts — "
+                    "or paste a design you'd like me to review."
+                ),
+                "intent": "CONCEPT_EXPLANATION",
+                "score": 1.0,
+                "is_fallback": False,
+            }
 
         # 1. Classify Intent
         intent = await intent_service.classify_intent(user_query, provider=provider)

@@ -22,7 +22,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.routes import chat_router, health_router, admin_router
+from app.api.routes import chat_router, health_router, admin_router, interview_router
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -130,6 +130,7 @@ def create_app() -> FastAPI:
     application.include_router(health_router)                          # GET  /health
     application.include_router(chat_router,   prefix="/api/v1")        # POST /api/v1/chat
     application.include_router(admin_router,  prefix="/api/v1")        # GET  /api/v1/admin/...
+    application.include_router(interview_router, prefix="/api/v1")     # POST /api/v1/interview/...
 
     # -------------------------------------------------------------------
     # Global exception handlers

@@ -151,5 +151,79 @@ class LLMService:
             logger.error(f"Error generating structured response: {str(e)}")
             raise
 
+    async def generate(
+        self,
+        messages: list[dict[str, str]],
+        provider: str = "gemini",
+        model: str | None = None,
+        temperature: float = 0.7,
+    ) -> str:
+        """
+        Multi-turn generation from a full messages list.
+
+        Accepts OpenAI-style messages:
+            [{"role": "system"|"user"|"assistant", "content": "..."}]
+
+        Extracts system instruction and converts user/assistant pairs
+        into Gemini's `contents` format.
+        """
+        resolved_model = model or "gemini-2.5-flash"
+
+        # Extract system message
+        system_parts = [m["content"] for m in messages if m["role"] == "system"]
+        system_instruction = "\n\n".join(system_parts) if system_parts else None
+
+        # Build contents for non-system messages
+        contents = []
+        for m in messages:
+            if m["role"] == "system":
+                continue
+            role = "user" if m["role"] == "user" else "model"
+            contents.append(types.Content(role=role, parts=[types.Part(text=m["content"])]))
+
+        if not contents:
+            raise ValueError("No user/assistant messages provided.")
+
+        if provider == "gemini" and self.gemini_client:
+            try:
+                config = types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    temperature=temperature,
+                )
+                response = await self.gemini_client.aio.models.generate_content(
+                    model=resolved_model,
+                    contents=contents,
+                    config=config,
+                )
+                text = response.text
+                if not text:
+                    raise ValueError("Empty response from Gemini.")
+                return text
+            except Exception as e:
+                err_str = str(e)
+                logger.error("Gemini multi-turn error: %s", err_str)
+                if "503" in err_str or "UNAVAILABLE" in err_str or "high demand" in err_str.lower():
+                    raise LLMOverloadedError(
+                        "The AI model is currently experiencing high demand. Please try again in a moment."
+                    )
+                raise RuntimeError(f"Multi-turn generation failed: {err_str}")
+        else:
+            # Fallback to OpenAI
+            try:
+                oai_messages = [{"role": m["role"], "content": m["content"]} for m in messages]
+                response = await self.openai_client.chat.completions.create(
+                    model=model or "gpt-4-turbo",
+                    messages=oai_messages,
+                    temperature=temperature,
+                )
+                content = response.choices[0].message.content
+                if not content:
+                    raise ValueError("Empty response from OpenAI.")
+                return content
+            except RateLimitError as e:
+                raise LLMOverloadedError(f"OpenAI overloaded: {e}")
+            except OpenAIError as e:
+                raise RuntimeError(f"OpenAI multi-turn failed: {e}")
+
 # Create a singleton instance for easy import across the app
 llm_service = LLMService()

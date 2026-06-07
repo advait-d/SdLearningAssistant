@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, HTTPException, status
+from fastapi.responses import JSONResponse
 
 from app.models import ChatRequest, ChatResponse, ErrorResponse
 from app.services.orchestrator_service import orchestrator
@@ -61,6 +62,17 @@ async def chat(payload: ChatRequest) -> ChatResponse:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An unexpected error occurred. Please try again later.",
+        )
+
+    # Surface LLM_OVERLOADED as HTTP 503 so the client can handle it distinctly
+    if result.get("error_code") == "LLM_OVERLOADED":
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "detail": result["response"],
+                "error_code": "LLM_OVERLOADED",
+            },
+            headers={"Retry-After": "15"},
         )
 
     return ChatResponse(

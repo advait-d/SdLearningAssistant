@@ -2,7 +2,7 @@ import os
 import json
 import logging
 from typing import Dict, Any, Optional
-from openai import AsyncOpenAI, OpenAIError
+from openai import AsyncOpenAI, OpenAIError, RateLimitError
 
 try:
     from google import genai
@@ -13,6 +13,11 @@ except ImportError:
 
 # Configure logger for this service
 logger = logging.getLogger(__name__)
+
+
+class LLMOverloadedError(RuntimeError):
+    """Raised when the LLM provider is temporarily overloaded (HTTP 503 / 429)."""
+    pass
 
 class LLMService:
     """
@@ -72,6 +77,9 @@ class LLMService:
                 raise ValueError("Received empty response from the model.")
             return content
             
+        except RateLimitError as e:
+            logger.error(f"OpenAI Rate Limit / Overloaded: {str(e)}")
+            raise LLMOverloadedError(f"OpenAI is currently overloaded. Please try again shortly.")
         except OpenAIError as e:
             logger.error(f"OpenAI API Error: {str(e)}")
             raise RuntimeError(f"Failed to communicate with OpenAI: {str(e)}")
@@ -104,8 +112,14 @@ class LLMService:
             return content
             
         except Exception as e:
-            logger.error(f"Gemini API Error: {str(e)}")
-            raise RuntimeError(f"Failed to communicate with Gemini: {str(e)}")
+            err_str = str(e)
+            logger.error(f"Gemini API Error: {err_str}")
+            # Detect 503 UNAVAILABLE — model is temporarily overloaded
+            if "503" in err_str or "UNAVAILABLE" in err_str or "high demand" in err_str.lower():
+                raise LLMOverloadedError(
+                    "The AI model is currently experiencing high demand. Please try again in a moment."
+                )
+            raise RuntimeError(f"Failed to communicate with Gemini: {err_str}")
 
     async def generate_structured_response(
         self, 

@@ -5,7 +5,7 @@ from typing import Dict, Any
 from app.services.intent_service import intent_service
 from app.services.retriever_service import retriever_service
 from app.services.memory_service import get_history, update_history
-from app.services.llm_service import llm_service
+from app.services.llm_service import llm_service, LLMOverloadedError
 from app.services.evaluator_service import evaluator_service
 
 logger = logging.getLogger(__name__)
@@ -93,12 +93,20 @@ class OrchestratorService:
                 provider=provider,
                 temperature=0.7
             )
+        except LLMOverloadedError as e:
+            logger.warning(f"LLM overloaded: {str(e)}")
+            return {
+                "response": str(e),
+                "intent": intent,
+                "score": 0.0,
+                "error_code": "LLM_OVERLOADED",
+            }
         except Exception as e:
             logger.error(f"LLM Generation failed: {str(e)}")
             return {
                 "response": "An error occurred while generating a system design response. Please try again later.",
                 "intent": intent,
-                "score": 0.0
+                "score": 0.0,
             }
 
         # 7. Evaluate and potentially trigger Fallback

@@ -43,6 +43,10 @@ class StartRequest(BaseModel):
         default="mid_senior",
         description="Difficulty level: junior, mid_senior, staff, principal"
     )
+    company: str = Field(
+        default="general",
+        description="Target company: general, google, meta, amazon, stripe, netflix"
+    )
     session_id: Optional[str] = Field(
         default=None,
         description="Optional session ID. Auto-generated if not provided."
@@ -92,6 +96,7 @@ async def start_interview(req: StartRequest):
             topic=topic,
             prompt=req.prompt,
             difficulty=difficulty,
+            company=req.company,
         )
         return result
 

@@ -48,7 +48,7 @@ _ALLOWED_ORIGINS: List[str] = [
     "http://localhost:5173",
     "http://127.0.0.1:3000",
     # Vercel preview / production URLs — add yours here
-    "https://*.vercel.app",
+    "https://system-design-mastery.vercel.app",
 ]
 
 # Optionally inject extra origins via environment variable (comma-separated)

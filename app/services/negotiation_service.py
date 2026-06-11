@@ -41,8 +41,8 @@ Do not break character. Do not say 'As an AI'.
             # We use generate() which handles multi-turn conversation
             response_text = await llm_service.generate(
                 messages=full_messages,
-                provider="openai",  # Using OpenAI for roleplay consistency
-                model="gpt-4-turbo",
+                provider="gemini",
+                model="gemini-2.5-flash",
                 temperature=0.7
             )
             return response_text

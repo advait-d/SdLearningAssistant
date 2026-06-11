@@ -40,12 +40,11 @@ Output JSON strictly in this format:
             
             user_input = f"Here is the resume text:\n\n{text}"
             
-            # Use OpenAI to structure the review
             response = await llm_service.generate_structured_response(
                 system_prompt=system_prompt,
                 user_input=user_input,
-                provider="openai",
-                model="gpt-4-turbo",
+                provider="gemini",
+                model="gemini-2.5-flash",
                 temperature=0.3
             )
             

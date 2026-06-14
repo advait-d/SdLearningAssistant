@@ -9,22 +9,27 @@ logger = logging.getLogger(__name__)
 class RoadmapService:
     async def generate_roadmap_from_pdf(
         self, 
-        pdf_bytes: bytes,
         target_role: str,
-        timeline_days: int
+        timeline_days: int,
+        pdf_bytes: bytes = None,
+        resume_text: str = None
     ) -> Dict[str, Any]:
         
-        # Extract text from PDF
-        try:
-            reader = PdfReader(io.BytesIO(pdf_bytes))
-            text = ""
-            for page in reader.pages:
-                extracted = page.extract_text()
-                if extracted:
-                    text += extracted + "\n"
-        except Exception as e:
-            logger.error(f"Error parsing PDF for roadmap: {str(e)}")
-            raise ValueError("Could not parse the uploaded PDF file.")
+        # Extract text from PDF if bytes provided, else use resume_text
+        text = resume_text or ""
+        if not text and pdf_bytes:
+            try:
+                reader = PdfReader(io.BytesIO(pdf_bytes))
+                for page in reader.pages:
+                    extracted = page.extract_text()
+                    if extracted:
+                        text += extracted + "\n"
+            except Exception as e:
+                logger.error(f"Error parsing PDF for roadmap: {str(e)}")
+                raise ValueError("Could not parse the uploaded PDF file.")
+        
+        if not text.strip():
+            raise ValueError("No resume text provided or extracted.")
 
         system_prompt = f"""You are an elite Staff Software Engineer coach. Your goal is to analyze the candidate's resume, identify their architectural gaps and weaknesses, and generate a highly focused, day-by-day study roadmap for them.
 

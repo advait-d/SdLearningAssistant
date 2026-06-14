@@ -18,8 +18,8 @@ async def review_resume(
         raise HTTPException(status_code=400, detail="Only PDF files are supported.")
         
     try:
-        feedback = await resume_service.review_resume(file, target_role)
-        return {"status": "success", "data": feedback}
+        result = await resume_service.review_resume(file, target_role)
+        return {"status": "success", "data": result["feedback"], "resume_text": result["resume_text"]}
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:

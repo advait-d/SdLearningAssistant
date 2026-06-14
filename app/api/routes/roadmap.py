@@ -2,13 +2,16 @@ from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 import logging
 from app.services.roadmap_service import roadmap_service
 
+from typing import Optional
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["roadmap"])
 
 @router.post("/generate")
 async def generate_roadmap(
-    file: UploadFile = File(...),
+    file: Optional[UploadFile] = File(None),
+    resume_text: Optional[str] = Form(None),
     target_role: str = Form(...),
     timeline_days: int = Form(30)
 ):
@@ -16,11 +19,12 @@ async def generate_roadmap(
     Generates a personalized study roadmap from a resume.
     """
     try:
-        content = await file.read()
+        content = await file.read() if file else None
         plan = await roadmap_service.generate_roadmap_from_pdf(
-            pdf_bytes=content,
             target_role=target_role,
-            timeline_days=timeline_days
+            timeline_days=timeline_days,
+            pdf_bytes=content,
+            resume_text=resume_text
         )
         return {"status": "success", "data": plan}
     except Exception as e:

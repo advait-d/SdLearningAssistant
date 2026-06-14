@@ -34,7 +34,8 @@ Output JSON strictly in this format:
   "strengths": ["...", "..."],
   "weaknesses": ["...", "..."],
   "action_items": ["...", "..."],
-  "overall_summary": "..."
+  "overall_summary": "...",
+  "extracted_skills": ["...", "..."]
 }}
 """
             
@@ -48,7 +49,11 @@ Output JSON strictly in this format:
                 temperature=0.3
             )
             
-            return response
+            
+            return {
+                "feedback": response,
+                "resume_text": text[:4000]
+            }
         except Exception as e:
             logger.error(f"Error parsing or reviewing resume: {str(e)}")
             raise

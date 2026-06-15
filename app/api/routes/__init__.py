@@ -9,6 +9,6 @@ from app.api.routes.interview import router as interview_router
 from app.api.routes.resume import router as resume_router
 from app.api.routes.negotiation import router as negotiation_router
 from app.api.routes.roadmap import router as roadmap_router
+from app.api.routes.drills import router as drills_router
 
-__all__ = ["chat_router", "health_router", "admin_router", "interview_router", "resume_router", "negotiation_router", "roadmap_router"]
-
+__all__ = ["chat_router", "health_router", "admin_router", "interview_router", "resume_router", "negotiation_router", "roadmap_router", "drills_router"]

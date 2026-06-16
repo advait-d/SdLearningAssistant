@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ─── Grading Prompt ──────────────────────────────────────────────────────────
 
-WHITEBOARD_GRADE_PROMPT = """You are an expert system design interviewer reviewing a candidate's architecture diagram.
+WHITEBOARD_GRADE_PROMPT = """You are an expert Staff/Principal system design interviewer reviewing a candidate's architecture diagram.
 
 Interview Context:
 - Problem: {prompt}
@@ -39,29 +39,45 @@ What the candidate has drawn (extracted labels and component count):
 Recent conversation context:
 {conversation_context}
 
-Your task: Review this diagram as an engaged interviewer would. Evaluate whether the diagram adequately addresses the problem.
+Your task: Review this diagram as a Staff-level interviewer would. Evaluate whether the diagram adequately addresses the problem, focusing on scale, reliability, cost, and proper component separation.
 
 Respond ONLY with valid JSON in this exact shape (no markdown, no prose):
 {{
-  "feedback": "<2-3 sentence natural interviewer reaction — acknowledge what they drew, what's missing, transition to your follow-up. Sound like a real tech interviewer, not a report.>",
-  "follow_up": "<single sharp follow-up question based on the diagram — probe for something missing or a tradeoff>",
-  "annotations": {{
-    "correct": ["<component or concept the candidate correctly included>", ...],
-    "missing": ["<critical missing component or concept>", ...],
-    "suggestions": ["<specific improvement or detail to add>", ...]
+  "feedback": "<2-3 sentence natural interviewer reaction — acknowledge what they drew, what's missing, transition to your follow-up. Sound like a real tech interviewer.>",
+  "hiring_recommendation": "<Strong Hire|Hire|Leaning Hire|No Hire>",
+  "architecture_score": <integer 1-100>,
+  "dimensions": {{
+    "coverage": <0-100>,
+    "scalability": <0-100>,
+    "reliability": <0-100>,
+    "cost": <0-100>,
+    "security": <0-100>,
+    "observability": <0-100>,
+    "tradeoff_quality": <0-100>
   }},
-  "diagram_score": <integer 1-10>,
-  "diagram_verdict": "<EXCELLENT|GOOD|INCOMPLETE|MISSING_CRITICAL_COMPONENTS>"
+  "issues": {{
+    "critical": [
+      {{ "text": "<Issue description>", "node_label": "<The exact text label from the diagram causing the issue, or null if missing>" }}
+    ],
+    "important": [
+      {{ "text": "<Issue description>", "node_label": "<The exact text label from the diagram causing the issue, or null>" }}
+    ],
+    "nice_to_have": [
+      {{ "text": "<Issue description>", "node_label": "<The exact text label from the diagram causing the issue, or null>" }}
+    ]
+  }},
+  "follow_up_questions": [
+    "<sharp follow-up question 1>",
+    "<sharp follow-up question 2>",
+    "<sharp follow-up question 3>"
+  ]
 }}
 
 Scoring guide:
-- 8-10: All critical components present, proper connections, handles scale
-- 6-7: Core components present but missing resilience/scale considerations
-- 4-5: Has the right idea but missing 2+ critical components
-- 1-3: Very basic, missing most architectural elements
-
-For system_design problems, critical components typically include: Load balancer, CDN, API gateway, primary database, cache layer, message queue (if async), monitoring/alerting.
-For low_level_design, critical components include: Core domain entities, key interfaces/contracts, data persistence layer, key design patterns applied.
+- 90-100: All critical components present, handles scale gracefully, proper tradeoffs.
+- 70-89: Solid core, missing some resilience/scale considerations.
+- 50-69: Has the right idea but missing multiple critical components.
+- <50: Very basic, fundamentally flawed or incomplete.
 """
 
 
@@ -176,23 +192,33 @@ class WhiteboardGradingService:
         text_labels: List[str],
     ) -> Dict[str, Any]:
         """Ensure all required keys exist with sensible defaults."""
-        annotations = raw.get("annotations", {})
+        issues = raw.get("issues", {})
+        dimensions = raw.get("dimensions", {})
         return {
             "feedback": raw.get(
                 "feedback",
                 f"I can see you've started drawing your architecture for '{prompt}'. Let me give you some feedback."
             ),
-            "follow_up": raw.get(
-                "follow_up",
-                "Can you walk me through how data flows through the components you've drawn?"
-            ),
-            "annotations": {
-                "correct": annotations.get("correct", []),
-                "missing": annotations.get("missing", []),
-                "suggestions": annotations.get("suggestions", []),
+            "hiring_recommendation": raw.get("hiring_recommendation", "Leaning Hire"),
+            "architecture_score": raw.get("architecture_score", 50),
+            "dimensions": {
+                "coverage": dimensions.get("coverage", 50),
+                "scalability": dimensions.get("scalability", 50),
+                "reliability": dimensions.get("reliability", 50),
+                "cost": dimensions.get("cost", 50),
+                "security": dimensions.get("security", 50),
+                "observability": dimensions.get("observability", 50),
+                "tradeoff_quality": dimensions.get("tradeoff_quality", 50),
             },
-            "diagram_score": raw.get("diagram_score", 5),
-            "diagram_verdict": raw.get("diagram_verdict", "INCOMPLETE"),
+            "issues": {
+                "critical": issues.get("critical", []),
+                "important": issues.get("important", []),
+                "nice_to_have": issues.get("nice_to_have", []),
+            },
+            "follow_up_questions": raw.get(
+                "follow_up_questions",
+                ["Can you walk me through how data flows through the components you've drawn?"]
+            )
         }
 
     def _fallback_result(
@@ -207,18 +233,22 @@ class WhiteboardGradingService:
                 f"for the {prompt} problem. "
                 "I couldn't analyze the diagram fully right now, but can you walk me through what you've drawn so far?"
             ),
-            "follow_up": "Can you explain the data flow between the components in your diagram?",
-            "annotations": {
-                "correct": labels[:3] if has_labels else [],
-                "missing": (
-                    ["Load balancer", "Database", "Cache layer"]
-                    if topic == "system_design"
-                    else ["Core entities", "Data persistence", "Key interfaces"]
-                ),
-                "suggestions": ["Add connection arrows to show data flow", "Label each component clearly"],
+            "hiring_recommendation": "Leaning Hire",
+            "architecture_score": 40,
+            "dimensions": {
+                "coverage": 40, "scalability": 40, "reliability": 40, 
+                "cost": 50, "security": 40, "observability": 20, "tradeoff_quality": 40
             },
-            "diagram_score": 4,
-            "diagram_verdict": "INCOMPLETE",
+            "issues": {
+                "critical": [{"text": "Missing key components", "node_label": None}],
+                "important": [{"text": "Explain data flow", "node_label": None}],
+                "nice_to_have": []
+            },
+            "follow_up_questions": [
+                "Can you explain the data flow between the components in your diagram?",
+                "How does this system handle a sudden spike in traffic?",
+                "Where are the single points of failure?"
+            ]
         }
 
 

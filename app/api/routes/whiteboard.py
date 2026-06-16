@@ -2,10 +2,7 @@
 Whiteboard Grading API routes — app/api/routes/whiteboard.py
 =============================================================
 POST /api/v1/whiteboard/grade  — Grade an architecture diagram during a mock interview
-
-Accepts the Excalidraw elements JSON from the frontend, along with interview context
-(prompt, topic, difficulty, recent conversation messages) and returns structured
-AI feedback that the interview page injects back into the conversation.
+POST /api/v1/whiteboard/followup — Process user answers to follow-up questions
 """
 
 from __future__ import annotations
@@ -17,7 +14,7 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
 from app.services.whiteboard_service import whiteboard_grading_service
-from app.services.llm_service import LLMOverloadedError
+from app.services.llm_service import LLMOverloadedError, llm_service
 
 logger = logging.getLogger(__name__)
 
@@ -39,11 +36,11 @@ class WhiteboardGradeRequest(BaseModel):
     )
     topic: str = Field(
         default="system_design",
-        description="Interview topic: system_design, low_level_design, behavioral, ml_design, dsa",
+        description="Interview topic",
     )
     difficulty: str = Field(
         default="mid_senior",
-        description="Difficulty level: junior, mid_senior, staff, principal",
+        description="Difficulty level",
     )
     elements: List[Dict[str, Any]] = Field(
         default_factory=list,
@@ -55,18 +52,47 @@ class WhiteboardGradeRequest(BaseModel):
     )
 
 
-class AnnotationsResponse(BaseModel):
-    correct: List[str]
-    missing: List[str]
-    suggestions: List[str]
+class Issue(BaseModel):
+    text: str
+    node_label: Optional[str]
+
+
+class IssuesResponse(BaseModel):
+    critical: List[Issue]
+    important: List[Issue]
+    nice_to_have: List[Issue]
+
+
+class DimensionsResponse(BaseModel):
+    coverage: int
+    scalability: int
+    reliability: int
+    cost: int
+    security: int
+    observability: int
+    tradeoff_quality: int
 
 
 class WhiteboardGradeResponse(BaseModel):
     feedback: str
-    follow_up: str
-    annotations: AnnotationsResponse
-    diagram_score: int
-    diagram_verdict: str
+    hiring_recommendation: str
+    architecture_score: int
+    dimensions: DimensionsResponse
+    issues: IssuesResponse
+    follow_up_questions: List[str]
+
+
+class FollowUpRequest(BaseModel):
+    question: str
+    answer: str
+    prompt: str
+    current_score: int
+
+
+class FollowUpResponse(BaseModel):
+    feedback: str
+    score_delta: int
+    new_hiring_recommendation: str
 
 
 # ─── Routes ────────────────────────────────────────────────────────────────────
@@ -75,12 +101,6 @@ class WhiteboardGradeResponse(BaseModel):
 async def grade_whiteboard(req: WhiteboardGradeRequest):
     """
     Grade an architecture diagram in the context of an ongoing interview session.
-
-    The AI interviewer analyzes the diagram elements, cross-references them
-    against the interview prompt and conversation history, and returns:
-    - Natural conversational feedback (injected into chat)
-    - Structured annotations (missing/correct/suggestions)
-    - A sharp follow-up question to continue the interview
     """
     if not req.elements:
         raise HTTPException(
@@ -89,7 +109,6 @@ async def grade_whiteboard(req: WhiteboardGradeRequest):
         )
 
     try:
-        # Convert Pydantic conversation messages to plain dicts
         conv_messages = None
         if req.conversation_messages:
             conv_messages = [
@@ -107,10 +126,11 @@ async def grade_whiteboard(req: WhiteboardGradeRequest):
 
         return WhiteboardGradeResponse(
             feedback=result["feedback"],
-            follow_up=result["follow_up"],
-            annotations=AnnotationsResponse(**result["annotations"]),
-            diagram_score=result["diagram_score"],
-            diagram_verdict=result["diagram_verdict"],
+            hiring_recommendation=result["hiring_recommendation"],
+            architecture_score=result["architecture_score"],
+            dimensions=DimensionsResponse(**result["dimensions"]),
+            issues=IssuesResponse(**result["issues"]),
+            follow_up_questions=result["follow_up_questions"],
         )
 
     except LLMOverloadedError:
@@ -126,4 +146,48 @@ async def grade_whiteboard(req: WhiteboardGradeRequest):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to grade diagram: {str(e)}",
+        )
+
+@router.post("/followup", response_model=FollowUpResponse)
+async def process_followup(req: FollowUpRequest):
+    """
+    Process a candidate's answer to a follow-up question and dynamically adjust their score.
+    """
+    try:
+        eval_prompt = f"""You are an expert system design interviewer. 
+The candidate is designing: {req.prompt}
+
+You previously asked this follow-up question regarding their architecture:
+"{req.question}"
+
+The candidate responded:
+"{req.answer}"
+
+Evaluate their answer. Respond ONLY with valid JSON in this exact shape:
+{{
+  "feedback": "<2-3 sentence reaction to their answer. Either accept their tradeoff or correct them.>",
+  "score_delta": <integer between -5 and +10 based on answer quality>,
+  "new_hiring_recommendation": "<Strong Hire|Hire|Leaning Hire|No Hire>"
+}}
+"""
+        raw = await llm_service.generate_structured_response(
+            system_prompt="You are an expert Staff-level technical interviewer.",
+            user_input=eval_prompt,
+            provider="gemini",
+            model="gemini-2.5-flash",
+            temperature=0.3,
+        )
+
+        return FollowUpResponse(
+            feedback=raw.get("feedback", "Thanks for clarifying that tradeoff."),
+            score_delta=raw.get("score_delta", 0),
+            new_hiring_recommendation=raw.get("new_hiring_recommendation", "Leaning Hire")
+        )
+
+    except Exception as e:
+        logger.exception("Failed to process followup")
+        return FollowUpResponse(
+            feedback="Thanks for the explanation.",
+            score_delta=0,
+            new_hiring_recommendation="Leaning Hire"
         )

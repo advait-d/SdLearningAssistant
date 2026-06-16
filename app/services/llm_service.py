@@ -1,7 +1,7 @@
 import os
 import json
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from openai import AsyncOpenAI, OpenAIError, RateLimitError
 
 try:
@@ -153,9 +153,9 @@ class LLMService:
 
     async def generate(
         self,
-        messages: list[dict[str, str]],
+        messages: List[Dict[str, str]],
         provider: str = "gemini",
-        model: str | None = None,
+        model: Optional[str] = None,
         temperature: float = 0.7,
     ) -> str:
         """

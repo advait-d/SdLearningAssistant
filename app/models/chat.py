@@ -4,7 +4,11 @@ Request and response models for the /chat endpoint.
 
 from __future__ import annotations
 
-from typing import Optional, Literal
+from typing import Optional
+try:
+    from typing import Literal
+except ImportError:
+    from typing_extensions import Literal  # type: ignore[assignment]
 from pydantic import BaseModel, Field
 
 

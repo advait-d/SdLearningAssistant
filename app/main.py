@@ -45,10 +45,12 @@ logger = logging.getLogger(__name__)
 _ALLOWED_ORIGINS: List[str] = [
     # local dev
     "http://localhost:3000",
+    "http://localhost:3001",
     "http://localhost:5173",
     "http://127.0.0.1:3000",
-    # Vercel preview / production URLs — add yours here
+    # Vercel preview / production URLs
     "https://system-design-mastery.vercel.app",
+    "https://v0-system-design-mastery.vercel.app",
 ]
 
 # Optionally inject extra origins via environment variable (comma-separated)
